@@ -1,0 +1,7 @@
+#!/bin/bash
+## prints domus and their listening ports
+echo
+printf "\e[0;37m%-20s %-20s\e[0m\n" domUs sockets
+printf "\e[0;37m%-20s %-20s\e[0m\n" ----- -------
+for p in $(pgrep qemu);do name=$(ps -p $p -o cmd:1= | awk '/domain/ {print $5}'); port=$(netstat -nptl| grep $p | awk '{print $4}'); printf "%-20s %-20s\n" $name $port; done
+echo

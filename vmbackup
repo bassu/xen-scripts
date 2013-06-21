@@ -1,0 +1,322 @@
+#!/bin/bash
+
+## ionice
+ionice -n 7 -p $$
+
+## Some globals, things to change
+BACKUP_DIR=/path/to/backup
+PROCESS_DIR=/path/to/local
+XL_CONF_DIR=/home/cfgs
+SNAPSHOT_PREFIX=snap
+SNAPSHOT_SIZE=100G
+
+## You don't need to modify anything below
+prog="vmbackup"
+pidfile=/tmp/$prog.pid
+logfile=/var/log/$prog
+tmpfile=/tmp/$prog
+
+## Only one instance should run at a time
+
+if [ -f $pidfile ]; then
+  if ps -p $(cat $pidfile) > /dev/null 2>&1; then
+      echo "$0 already running!"
+      exit
+  fi
+fi
+echo $$ > $pidfile
+trap 'rm -f "$pidfile" >/dev/null 2>&1' EXIT HUP KILL INT QUIT TERM
+
+# if you want non-fancy output
+[[ $@ =~ "-c" ]] && console="yes" || console="no"
+
+## Calculation functions
+spinner() {
+    local pid=$1
+    local delay=0.5
+    local spinstr='|/-\'
+    while [ "$(ps a | awk '{print $1}' | grep $pid 2>> $logfile)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
+
+align() {
+    awk -F '[' '{printf "%-50s [%-20s\n", $1,$2}'
+}
+
+result() {
+    [[ $? -eq 0 ]] && success || failure
+    echo
+}
+
+timestart() {
+    start=$(date +%s)
+}
+
+timeend() {
+    eta=$(printf "%.2f" $(awk 'BEGIN { print '$(expr $(date +%s) - $start)'/60 }'))
+}
+
+succ_fail() {
+
+   if [[ $console == "no" ]]; then
+	RES_COL=60
+	MOVE_TO_COL="echo -en \\033[${RES_COL}G"
+	SETCOLOR_SUCCESS="echo -en \\033[0;31m"
+	SETCOLOR_FAILURE="echo -en \\033[1;45m"
+	SETCOLOR_NORMAL="echo -en \\033[0;39m"
+    else
+	RES_COL=
+	MOVE_TO_COL=
+	SETCOLOR_SUCCESS=
+	SETCOLOR_FAILURE=
+	SETCOLOR_NORMAL=
+    fi
+}
+
+success() {
+    succ_fail
+    $MOVE_TO_COL
+    echo -n "["
+    $SETCOLOR_SUCCESS
+    echo -n $"  OK  "
+    $SETCOLOR_NORMAL
+    echo -n "]"
+    return 0
+}
+
+failure() {
+    succ_fail
+    $MOVE_TO_COL
+    echo -n "["
+    $SETCOLOR_FAILURE
+    echo -n $"  FAILED  "
+    $SETCOLOR_NORMAL
+    echo -n "]"
+    return 0
+}
+
+
+## Backup process functions
+
+find_vm () {
+    ## Make sure xl honors the vm and config exists
+    [[ ! "$(xl list $1)" ]] && { echo $1 vm not found; exit 1; }
+    echo -n $"   finding vm $1 "
+    [[ ! -f "$XL_CONF_DIR/$1.cfg" ]] && { echo $1.cfg config file not found; exit 1; } || vm="$1"
+    result
+} 
+	    
+
+find_lvm () {
+    ## If vm is lvm based, i.e. count /dev/ in cfg file
+    echo -n $"   checking if $vm is lvm based "
+    dev=$(awk '/\/dev/{++c} END {print c}' "$XL_CONF_DIR/$vm.cfg")
+    [[ $dev -gt 0 ]] &&	lvm_cfg=$(awk -F '[/=,]' '/phy:/ {print "/"$3"/"$4"/"$5}' "$XL_CONF_DIR/$vm.cfg") || { echo "$vm is not lvm based, cannot proceed"; exit 1; }
+    result
+    ## We could probably go no where if lvm doesn't exit
+    echo -n $"   finding lvm for $vm "
+    [[ $(lvdisplay $lvm_cfg 2> $logfile | grep "$lvm_cfg" | wc -l) -eq 0 ]] &&  { echo $lvm_cfg lvm does not exist; exit 1; } || { lvm=$lvm_cfg; vg=$(echo $lvm | cut -d'/' -f3); }
+    result
+}
+
+start_snap () {
+    ## Preexisting snapshots can screw the whole disks; better to have one chain per lvm
+    count_snaps=$(lvdisplay $lvm | awk '/source/{l++} END {print l}')
+    [[ $count_snaps -gt 0 ]] && { echo "   warning: snapshot already existed, recreating "; remove_snap; result; }
+    ## Snapshots are pretty fuckin slow so set chunk size to max
+    echo -n $"   creating snapshot $SNAPSHOT_PREFIX$vm for $vm "
+    lvcreate -L$SNAPSHOT_SIZE -c 512K --snapshot -n "$SNAPSHOT_PREFIX$vm" "$lvm" >> $logfile 2>&1
+    result
+}
+
+remove_snap () {
+    ## Be sure that it's a snapshot that we are removing
+    echo -n $"   removing snapshot $vg/$SNAPSHOT_PREFIX$vm "
+    is_snap=$(lvdisplay /dev/$vg/$SNAPSHOT_PREFIX$vm | awk '/snapshot status/ {if ($5=="destination") print "yes"; else print "no"}')
+    [[ $is_snap == "yes" ]] && lvremove -f "$vg/$SNAPSHOT_PREFIX$vm" >> $logfile 2>&1 || { echo "/dev/$vg/$SNAPSHOT_PREFIX$vm does not look like a snapshot, cannot proceed"; exit 1; }
+    result
+}
+
+dump_snap () {
+    echo -n $"   dumping the snapshot "
+    if [[ $console == "no" ]]; then 
+	dd if="/dev/$vg/$SNAPSHOT_PREFIX$vm" of=$PROCESS_DIR/$vm.raw bs=512K >> $logfile 2>&1 & 
+	spinner $!
+    else
+	dd if="/dev/$vg/$SNAPSHOT_PREFIX$vm" of=$PROCESS_DIR/$vm.raw bs=512K >> $logfile 2>&1 &
+    fi
+    ## if lvs reports input/output or snapshot fill errors, now is the time to catch and abort
+    ddpid=$!
+    while [ "$(ps a | awk '{print $1}' | grep $ddpid 2>> $logfile)" ]; do
+	if [[ $(lvs /dev/$vg/$SNAPSHOT_PREFIX$vm | grep -i error | wc -l) -gt 0 ]]; then
+	    echo "lvs reports errors, quitting"
+	    killall -9 dd
+	    exit 1
+	fi
+    done
+    wait $ddpid
+    result
+}
+
+prepare () {
+    echo -n $"   backing up lvm list"
+    lvs -o lv_name,lv_size > $BACKUP_DIR/lvms-list
+    result
+    if [[ ! -d $BACKUP_DIR/$vm ]]; then
+	echo -n $"   creating backup directory for $vm "
+	mkdir -p $BACKUP_DIR/$vm
+    else
+	echo -n $"   backup directory already exists "
+    fi
+    result
+    echo -n $"   copying $vm.cfg configuration file "
+    cp -f "$XL_CONF_DIR/$vm.cfg"  $BACKUP_DIR/$vm
+    result
+}
+
+compress_img () {
+    rawsize=$(ls -sht $PROCESS_DIR/$vm*.raw | head -1 | awk '{print $1}' 2>> $logfile)
+    echo -n $"   compressing raw image of size $rawsize via lzop "
+    suffix=$(date +'%d%b%y-%s' | tr [:upper:] [:lower:])
+    ## only show progress bar when not running interactively i.e. from crons
+    if [[ $console == "no" ]]; then
+	lzop -v $PROCESS_DIR/$vm.raw -o $BACKUP_DIR/$vm/$vm-$suffix.lzop >> $logfile 2>&1 &
+	spinner $!
+    else
+	lzop -v $PROCESS_DIR/$vm.raw -o $BACKUP_DIR/$vm/$vm-$suffix.lzop >> $logfile 2>&1
+    fi
+    result
+}
+
+cleanup () {
+    ## Rotate the backup 
+    ## recentfile=$(awk '/compressing/ && /into/ && /'$vm'/ {print $4}' $logfile | awk '{gsub(/\/.*\//,"",$1); print}' | head -1)
+    echo -n $"   rotating old backup files for $vm"
+    find $BACKUP_DIR/$vm -size +2M -type f -not -iname "$vm-$suffix.lzop" -exec rm -f {} +
+    result
+    echo -n $"   cleaning up processing directory "
+    rm $PROCESS_DIR/$vm.raw -f
+    result
+    filesize=$(ls -sht $BACKUP_DIR/$vm/$vm-$suffix.lzop | head -1 | awk '{print $1}' 2>> $logfile)
+    echo -n $"   verifying backup of size $filesize "
+    result
+    sync
+}
+
+## Greetings. Single quotes prevent bash execution and ^[ is escape key inserted by M-x ucs-insert: ESCAPE
+if [[ $console == "yes" ]]; then
+cat << 'EOF'
+              __     __         ____             _                
+              \ \   / / __ ___ | __ )  __ _  ___| | ___   _ _ __  
+               \ \ / / '_ ` _ \|  _ \ / _` |/ __| |/ / | | | '_ \ 
+                \ V /| | | | | | |_) | (_| | (__|   <| |_| | |_) |
+                 \_/ |_| |_| |_|____/ \__,_|\___|_|\_\\__,_| .__/ 
+                                                           |_|    
+
+              Phi9 Xen Backup   By: bassu@phi9.com   Version: 0.2   
+
+
+EOF
+
+else
+
+cat << 'EOF'
+
+
+
+
+
+[1;44;37m               __     __         ____             _                         [0m
+[1;44;37m               \ \   / / __ ___ | __ )  __ _  ___| | ___   _ _ __           [0m
+[1;44;37m                \ \ / / '_ ` _ \|  _ \ / _` |/ __| |/ / | | | '_ \          [0m
+[1;44;37m                 \ V /| | | | | | |_) | (_| | (__|   <| |_| | |_) |         [0m
+[1;44;37m                  \_/ |_| |_| |_|____/ \__,_|\___|_|\_\\__,_| .__/          [0m
+[1;44;37m                                                            |_|             [0m
+[1;45;37m       Phi9 Xen Backup       By: bassu@phi9.com         Version: 0.1B       [0m
+
+
+
+EOF
+
+fi
+
+## Backup a single vm
+
+one () {
+    [[ $1 == "" ]] &&  { echo "Usage: $0 [-c] [all| one [vmname]]"; exit 1; }
+    [[ $console == "no" ]] && echo -e "\e[0;37m\n\r=> Backing up $1... standby\e[0m" || echo -e "\n=> Backing up $1... standby" 
+    if [[ $console == "no" ]]; then 
+	timestart
+	find_vm $1
+	find_lvm
+	start_snap
+	dump_snap
+	remove_snap
+	prepare
+	compress_img
+	cleanup
+	timeend
+    else
+	timestart
+	## Bash's multithreading is shitty (a reason next major version will be in python); it doesn't create real subshells
+	## and variables on function pipes don't persist; also process substitution screws lvdisplay so doing manual processing
+	## on initial functions that actually do the job
+        find_vm $1   > $tmpfile; cat $tmpfile | align
+	find_lvm     > $tmpfile; cat $tmpfile | align
+	start_snap   > $tmpfile; cat $tmpfile | align 
+	dump_snap    > $tmpfile; cat $tmpfile | align 
+	remove_snap  > $tmpfile; cat $tmpfile | align 
+	prepare      > $tmpfile; cat $tmpfile | align 
+	compress_img > $tmpfile; cat $tmpfile | align 
+	cleanup      > $tmpfile; cat $tmpfile | align 
+	timeend 
+    fi
+    [[ $console == "no" ]] && echo -e "\e[0;34m=> Backup time: $eta min\e[0m" || echo -e "=> Backup time: $eta min"
+    rm -f $lockfile
+}
+
+all () {
+    [[ $console == "no" ]] && echo -e "\e[0;37m\n\r=> Backing up *all* domains ...\e[0m" || echo -e "\n=> Backing up *all* domains ..."
+    for vm_to_backup in $(xl list | awk '{print $1}' | sed '1d' | grep -i -v 'domain-0' 2>> $pidfile); do
+	one $vm_to_backup
+    done
+}
+
+if [[ $console == "yes" ]]; then
+    case "$2" in 
+	all)
+	    all
+	    ;;
+	one)
+	    one $3
+	    ;;
+	*)
+	    echo "Usage: $0 [-c] [all| one [vmname]]"
+	    echo "   -c    show non-fancy output i.e. for crons"
+	    echo "   one   backup one vm with name specified after it"
+	    echo "   all   backup all vms"
+
+	    exit 2
+    esac	
+else
+    case "$1" in 
+	all)
+	    all
+	    ;;
+	one)
+	    one $2
+	    ;;
+	*)
+	    echo "Usage: $0 [-c] [all| one [vmname]]"
+	    echo "   -c    show non-fancy output i.e. for crons"
+	    echo "   one   backup one vm with name specified after it"
+	    echo "   all   backup all vms"
+	    exit 2
+    esac	
+fi
