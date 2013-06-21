@@ -34,15 +34,21 @@ Backups up LVM based domus using snapshots. A shell script.
 
 ### Command-line Options
 
-	vmbackup one [name]
-will backup one domu vm interactively 
-	vmbackup -c one [name]
+	vmbackup one [domu_name]
+
+will backup one domu vm interactively, name as shown in xl list
+
+	vmbackup -c one [domu_name]
+
 will do the same (run through a cronjob)
+
 	vmbackup -c all 
+
 will backup all domus (run through a cronjob)
 
 ### Sample Output
 
+![Image](./vmbackup.png?raw=true)
 
 
 
