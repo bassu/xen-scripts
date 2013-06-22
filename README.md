@@ -5,7 +5,7 @@ A sweet of scripts for automation and daily administration of xen dom0s.
 vmbackup
 --------
 
-Backups up LVM based domus using snapshots. A shell script.
+Backups up LVM based domus using snapshots. A broad shell script for opensource xen backup or virtual machine (vm) backup.
 
 ### Features 
 
