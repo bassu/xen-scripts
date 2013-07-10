@@ -1,11 +1,11 @@
 #!/bin/bash
 
 #########################################################################
-# Copyright Bassu														#
-# "THE BEER-WARE LICENSE"												#
-# <bassu@phi9.com> wrote this file. As long as you retain this			#
-# notice you can do whatever you want with this stuff. If we meet		#
-# some day and this stuff is worth it, you can buy me a beer in return	#
+# Copyright Bassu                                                       #
+# "THE BEER-WARE LICENSE"                                               #
+# <bassu@phi9.com> wrote this file. As long as you retain this          #
+# notice you can do whatever you want with this stuff. If we meet       #
+# some day and this stuff is worth it, you can buy me a beer in return  #
 #########################################################################
 
 ## Some globals
@@ -68,17 +68,17 @@ timeend() {
 succ_fail() {
 
    if [[ $console == "no" ]]; then
-	RES_COL=60
-	MOVE_TO_COL="echo -en \\033[${RES_COL}G"
-	SETCOLOR_SUCCESS="echo -en \\033[0;31m"
-	SETCOLOR_FAILURE="echo -en \\033[1;45m"
-	SETCOLOR_NORMAL="echo -en \\033[0;39m"
+    RES_COL=60
+    MOVE_TO_COL="echo -en \\033[${RES_COL}G"
+    SETCOLOR_SUCCESS="echo -en \\033[0;31m"
+    SETCOLOR_FAILURE="echo -en \\033[1;45m"
+    SETCOLOR_NORMAL="echo -en \\033[0;39m"
     else
-	RES_COL=
-	MOVE_TO_COL=
-	SETCOLOR_SUCCESS=
-	SETCOLOR_FAILURE=
-	SETCOLOR_NORMAL=
+    RES_COL=
+    MOVE_TO_COL=
+    SETCOLOR_SUCCESS=
+    SETCOLOR_FAILURE=
+    SETCOLOR_NORMAL=
     fi
 }
 
@@ -114,13 +114,13 @@ find_vm () {
     [[ ! -f "$XL_CONF_DIR/$1.cfg" ]] && { echo $1.cfg config file not found; exit 1; } || vm="$1"
     result
 } 
-	    
+        
 
 find_lvm () {
     ## If vm is lvm based, i.e. count /dev/ in cfg file
     echo -n $"   checking if $vm is lvm based "
     dev=$(awk '/\/dev/{++c} END {print c}' "$XL_CONF_DIR/$vm.cfg")
-    [[ $dev -gt 0 ]] &&	lvm_cfg=$(awk -F '[/=,]' '/phy:/ {print "/"$3"/"$4"/"$5}' "$XL_CONF_DIR/$vm.cfg") || { echo "$vm is not lvm based, cannot proceed"; exit 1; }
+    [[ $dev -gt 0 ]] && lvm_cfg=$(awk -F '[/=,]' '/phy:/ {print "/"$3"/"$4"/"$5}' "$XL_CONF_DIR/$vm.cfg") || { echo "$vm is not lvm based, cannot proceed"; exit 1; }
     result
     ## We could probably go no where if lvm doesn't exit
     echo -n $"   finding lvm for $vm "
@@ -152,21 +152,21 @@ dump_and_compress() {
     echo -n $"   dumping and compressing $rawsize simultaneously "
     echo "executing lzop -c < /dev/$vg/$SNAPSHOT_PREFIX$vm > $BACKUP_DIR/$vm/$vm-$suffix.lzo" >>$logfile 2>&1
     if [[ $console == "no" ]]; then 
-	lzop -c < /dev/$vg/$SNAPSHOT_PREFIX$vm > $BACKUP_DIR/$vm/$vm-$suffix.lzo & 
-	spinner $!
+    lzop -c < /dev/$vg/$SNAPSHOT_PREFIX$vm > $BACKUP_DIR/$vm/$vm-$suffix.lzo & 
+    spinner $!
     else
-	lzop -c < /dev/$vg/$SNAPSHOT_PREFIX$vm > $BACKUP_DIR/$vm/$vm-$suffix.lzo &
+    lzop -c < /dev/$vg/$SNAPSHOT_PREFIX$vm > $BACKUP_DIR/$vm/$vm-$suffix.lzo &
     fi
     ## if lvs reports i/o errors or snapshot fill errors, now is the time to catch and abort
     ddpid=$!
     while [ "$(ps a | awk '{print $1}' | grep $ddpid 2>> $logfile)" ]; do
-	## keep checking every fifteen seconds
-	sleep 15
-	if [[ $(lvs /dev/$vg/$SNAPSHOT_PREFIX$vm | grep -i error | wc -l) -gt 0 ]]; then
-	    echo "lvs reports errors, quitting"
-	    kill -9 $ddpid
-	    exit 1
-	fi
+    ## keep checking every fifteen seconds
+    sleep 15
+    if [[ $(lvs /dev/$vg/$SNAPSHOT_PREFIX$vm | grep -i error | wc -l) -gt 0 ]]; then
+        echo "lvs reports errors, quitting"
+        kill -9 $ddpid
+        exit 1
+    fi
     done
     wait $ddpid
     result
@@ -177,10 +177,10 @@ prepare () {
     lvs -o lv_name,lv_size > $BACKUP_DIR/lvms-list
     result
     if [[ ! -d $BACKUP_DIR/$vm ]]; then
-	echo -n $"   creating backup directory for $vm "
-	mkdir -p $BACKUP_DIR/$vm
+    echo -n $"   creating backup directory for $vm "
+    mkdir -p $BACKUP_DIR/$vm
     else
-	echo -n $"   backup directory already exists "
+    echo -n $"   backup directory already exists "
     fi
     result
     echo -n $"   copying $vm.cfg configuration file "
@@ -246,28 +246,28 @@ one () {
     [[ $1 == "" ]] &&  { echo "Usage: $0 [-c] [all| one [vmname]]"; exit 1; }
     [[ $console == "no" ]] && echo -e "\e[0;37m\n\r=> Backing up $1... standby\e[0m" || echo -e "\n=> Backing up $1... standby" 
     if [[ $console == "no" ]]; then 
-	timestart
-	find_vm $1
-	find_lvm
-	start_snap
-	prepare
-	dump_and_compress
-	remove_snap
-	cleanup
-	timeend
+    timestart
+    find_vm $1
+    find_lvm
+    start_snap
+    prepare
+    dump_and_compress
+    remove_snap
+    cleanup
+    timeend
     else
-	timestart
-	## Bash's multithreading is shitty (a reason next major version will be in python); it doesn't create real subshells
-	## and variables on function pipes don't persist; also process substitution screws lvdisplay so doing manual processing
-	## on initial functions that actually do the job
-        find_vm $1   	    > $tmpfile; cat $tmpfile | align
-	find_lvm 	    > $tmpfile; cat $tmpfile | align
-	prepare             > $tmpfile; cat $tmpfile | align 
-	start_snap   	    > $tmpfile; cat $tmpfile | align 
-	dump_and_compress   > $tmpfile; cat $tmpfile | align 
-	remove_snap  	    > $tmpfile; cat $tmpfile | align 
-	cleanup             > $tmpfile; cat $tmpfile | align 
-	timeend 
+    timestart
+    ## Bash's multithreading is shitty (a reason next major version will be in python); it doesn't create real subshells
+    ## and variables on function pipes don't persist; also process substitution screws lvdisplay so doing manual processing
+    ## on initial functions that actually do the job
+        find_vm $1          > $tmpfile; cat $tmpfile | align
+    find_lvm        > $tmpfile; cat $tmpfile | align
+    prepare             > $tmpfile; cat $tmpfile | align 
+    start_snap          > $tmpfile; cat $tmpfile | align 
+    dump_and_compress   > $tmpfile; cat $tmpfile | align 
+    remove_snap         > $tmpfile; cat $tmpfile | align 
+    cleanup             > $tmpfile; cat $tmpfile | align 
+    timeend 
     fi
     [[ $console == "no" ]] && echo -e "\e[0;34m=> Backup time: $eta min\e[0m" || echo -e "=> Backup time: $eta min"
     rm -f $lockfile
@@ -276,39 +276,39 @@ one () {
 all () {
     [[ $console == "no" ]] && echo -e "\e[0;37m\n\r=> Backing up *all* domains ...\e[0m" || echo -e "\n=> Backing up *all* domains ..."
     for vm_to_backup in $(xl list | awk '{print $1}' | sed '1d' | grep -i -v 'domain-0' 2>> $pidfile); do
-	one $vm_to_backup
+    one $vm_to_backup
     done
 }
 
 if [[ $console == "yes" ]]; then
     case "$2" in 
-	all)
-	    all
-	    ;;
-	one)
-	    one $3
-	    ;;
-	*)
-	    echo "Usage: $0 [-c] [all| one [vmname]]"
-	    echo "   -c    show non-fancy output i.e. for crons"
-	    echo "   one   backup one vm with name specified after it"
-	    echo "   all   backup all vms"
+    all)
+        all
+        ;;
+    one)
+        one $3
+        ;;
+    *)
+        echo "Usage: $0 [-c] [all| one [vmname]]"
+        echo "   -c    show non-fancy output i.e. for crons"
+        echo "   one   backup one vm with name specified after it"
+        echo "   all   backup all vms"
 
-	    exit 2
-    esac	
+        exit 2
+    esac    
 else
     case "$1" in 
-	all)
-	    all
-	    ;;
-	one)
-	    one $2
-	    ;;
-	*)
-	    echo "Usage: $0 [-c] [all| one [vmname]]"
-	    echo "   -c    show non-fancy output i.e. for crons"
-	    echo "   one   backup one vm with name specified after it"
-	    echo "   all   backup all vms"
-	    exit 2
-    esac	
+    all)
+        all
+        ;;
+    one)
+        one $2
+        ;;
+    *)
+        echo "Usage: $0 [-c] [all| one [vmname]]"
+        echo "   -c    show non-fancy output i.e. for crons"
+        echo "   one   backup one vm with name specified after it"
+        echo "   all   backup all vms"
+        exit 2
+    esac    
 fi
